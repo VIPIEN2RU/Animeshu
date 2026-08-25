@@ -1,5 +1,7 @@
-__pycache__/
-*.pyc
-.env
+node_modules/
+dist/
 .max-session.json
 downloaded_releases.txt
+temp/
+*.log
+.env
