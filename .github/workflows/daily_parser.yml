@@ -1,0 +1,57 @@
+name: Ежедневный парсинг AniLiberty → MAX
+
+on:
+  schedule:
+    # Каждый день в 00:00 UTC (3:00 МСК)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Клонирование
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 📦 Установка зависимостей
+        run: pip install -r requirements.txt
+      
+      - name: 🔑 Восстановление сессии MAX
+        run: |
+          if [ -n "${{ secrets.MAX_SESSION }}" ]; then
+            echo "${{ secrets.MAX_SESSION }}" > .max-session.json
+            echo "✅ Сессия восстановлена"
+          else
+            echo "⚠️ Сессия не найдена"
+          fi
+      
+      - name: 🧹 Освобождение места (только для видео)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/lib/android
+          docker system prune -f || true
+      
+      - name: 🚀 Запуск
+        run: python src/anilibria_to_max.py
+        env:
+          GITHUB_ACTIONS: true
+          MAX_PHONE: ${{ secrets.MAX_PHONE }}
+      
+      - name: 💾 Сохранение данных
+        if: always()
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .max-session.json downloaded_releases.txt 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "🔄 Обновление данных [skip ci]"
+          git push
