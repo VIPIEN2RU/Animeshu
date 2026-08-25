@@ -1,0 +1,3 @@
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+max-account-api>=0.1.0
