@@ -3,8 +3,8 @@
 import { MaxClient } from 'max-account-api';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { promises as fs } from 'fs';
-import { createWriteStream, unlinkSync } from 'fs';
+import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -22,7 +22,7 @@ const TEMP_DIR = 'temp';
 
 // Переменные окружения
 const IS_GITHUB_ACTIONS = process.env.GITHUB_ACTIONS === 'true';
-const SESSION_BASE64 = process.env.MAX_SESSION_BASE64; // Если сессия сохранена в Base64
+const SESSION_BASE64 = process.env.MAX_SESSION_BASE64;
 
 // ============== ИСТОРИЯ ==============
 class History {
@@ -50,7 +50,7 @@ class History {
 
   async markSent(id: string): Promise<void> {
     this.sentIds.add(id);
-    await fs.appendFile(this.filePath, id + '\n', 'utf-8');
+    await fsPromises.appendFile(this.filePath, id + '\n', 'utf-8');
   }
 }
 
@@ -128,7 +128,6 @@ class AniLibertyParser {
     const m3u8Pattern = /https?:\/\/[^\s"']+\.m3u8[^\s"']*/g;
     const matches = html.match(m3u8Pattern);
     if (!matches) return null;
-    // Предпочитаем 720p
     const preferred = matches.find(u => u.includes('720') || u.includes('720p'));
     return preferred || matches[0];
   }
@@ -140,17 +139,16 @@ class MaxClientWrapper {
   private chatId: string | null = null;
 
   async login(): Promise<void> {
-    let sessionData = null;
-
     // Если сессия передана через переменную окружения (Base64), сохраняем в файл
     if (SESSION_BASE64) {
       const json = Buffer.from(SESSION_BASE64, 'base64').toString('utf-8');
-      await fs.writeFile(SESSION_FILE, json, 'utf-8');
+      await fsPromises.writeFile(SESSION_FILE, json, 'utf-8');
       console.log('🔑 Сессия восстановлена из переменной окружения');
     }
 
     // Если файл сессии существует, используем его
-    if (await fs.exists(SESSION_FILE).catch(() => false)) {
+    try {
+      await fsPromises.access(SESSION_FILE);
       console.log('📂 Используем сохранённую сессию');
       this.client = new MaxClient({ sessionFile: SESSION_FILE });
       await this.client.connect();
@@ -162,14 +160,14 @@ class MaxClientWrapper {
         console.log('⚠️ Сессия истекла, требуется повторный вход');
         await this.doInteractiveLogin();
       }
-    } else {
+    } catch {
       console.log('🆕 Сессия не найдена, выполняем интерактивный вход');
       await this.doInteractiveLogin();
     }
 
     // Получаем ID чата "Избранное"
     const dialogs = await this.client!.getDialogs();
-    const fav = dialogs.find(d => d.title === 'Избранное' || d.isSelf);
+    const fav = dialogs.find((d: any) => d.title === 'Избранное' || d.isSelf);
     if (!fav) throw new Error('Чат "Избранное" не найден');
     this.chatId = fav.id;
     console.log(`📨 Чат "Избранное" найден (ID: ${this.chatId})`);
@@ -192,7 +190,7 @@ class MaxClientWrapper {
       const client = await MaxClient.loginWithPhone({
         phone,
         getSmsCode: () => question('SMS-код: '),
-        getPassword: (challenge) => question(`2FA пароль (подсказка: ${challenge.hint}): `),
+        getPassword: (challenge: any) => question(`2FA пароль (подсказка: ${challenge.hint}): `),
         sessionFile: SESSION_FILE,
       });
       this.client = client;
@@ -205,11 +203,9 @@ class MaxClientWrapper {
   async sendVideo(videoPath: string, caption: string): Promise<void> {
     if (!this.client || !this.chatId) throw new Error('Клиент или чат не инициализированы');
 
-    // Читаем файл в буфер
-    const data = await fs.readFile(videoPath);
+    const data = await fsPromises.readFile(videoPath);
     const filename = path.basename(videoPath);
 
-    // Отправляем
     await this.client.sendVideo(this.chatId, { data, filename }, caption);
     console.log(`📤 Видео "${filename}" отправлено`);
   }
@@ -220,9 +216,8 @@ class MaxClientWrapper {
   }
 }
 
-// ============== ЗАГРУЗЧИК ВИДЕО (через ffmpeg) ==============
+// ============== ЗАГРУЗЧИК ВИДЕО ==============
 async function downloadVideo(m3u8Url: string, outputPath: string): Promise<void> {
-  // Используем ffmpeg для скачивания и конвертации в MP4
   const cmd = `ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc -y "${outputPath}"`;
   console.log(`📥 Загрузка видео: ${m3u8Url}`);
   const { stderr } = await execAsync(cmd);
@@ -236,15 +231,12 @@ async function main() {
   console.log(`📅 ${new Date().toISOString()}`);
   console.log(`🔄 Окружение: ${IS_GITHUB_ACTIONS ? 'GitHub Actions' : 'локальное'}`);
 
-  // 1. Инициализация
   const history = new History(HISTORY_FILE);
   const parser = new AniLibertyParser();
   const max = new MaxClientWrapper();
 
-  // 2. Авторизация в MAX
   await max.login();
 
-  // 3. Парсинг новинок
   console.log('\n📡 Парсинг AniLiberty...');
   const html = await parser.fetchHtml(LATEST_URL);
   const releaseLinks = parser.getReleaseLinks(html);
@@ -265,7 +257,6 @@ async function main() {
     console.log(`   ✨ НОВЫЙ РЕЛИЗ: ${release.title}`);
     console.log(`   📀 Эпизодов: ${release.episodeCount}`);
 
-    // Отправляем информацию о релизе
     const info = `
 <b>🎬 ${release.title}</b>
 <i>${release.englishTitle || ''}</i>
@@ -277,7 +268,6 @@ async function main() {
 `;
     await max.sendMessage(info.trim());
 
-    // Обрабатываем эпизоды
     let sentEpisodes = 0;
     for (const episode of release.episodes) {
       console.log(`\n   📺 Эпизод ${episode.number}: ${episode.name}`);
@@ -287,21 +277,17 @@ async function main() {
         continue;
       }
 
-      // Скачиваем во временный файл
       const tempFile = path.join(TEMP_DIR, `${release.id}_ep${episode.number}.mp4`);
-      await fs.mkdir(TEMP_DIR, { recursive: true });
+      await fsPromises.mkdir(TEMP_DIR, { recursive: true });
       try {
         await downloadVideo(videoUrl, tempFile);
-        // Отправляем в MAX
         const caption = `${release.title} - Эпизод ${episode.number}: ${episode.name}`;
         await max.sendVideo(tempFile, caption);
         sentEpisodes++;
-        // Удаляем временный файл
-        await fs.unlink(tempFile).catch(() => {});
+        await fsPromises.unlink(tempFile).catch(() => {});
       } catch (err) {
         console.error(`   ❌ Ошибка обработки эпизода:`, err);
-        // Удаляем временный файл, если он есть
-        await fs.unlink(tempFile).catch(() => {});
+        await fsPromises.unlink(tempFile).catch(() => {});
       }
     }
 
@@ -312,20 +298,18 @@ async function main() {
     }
   }
 
-  // 4. Очистка временной папки (на всякий случай)
   try {
-    const files = await fs.readdir(TEMP_DIR);
+    const files = await fsPromises.readdir(TEMP_DIR);
     for (const file of files) {
-      await fs.unlink(path.join(TEMP_DIR, file)).catch(() => {});
+      await fsPromises.unlink(path.join(TEMP_DIR, file)).catch(() => {});
     }
-    await fs.rmdir(TEMP_DIR).catch(() => {});
+    await fsPromises.rmdir(TEMP_DIR).catch(() => {});
   } catch {}
 
   console.log('\n🎉 Готово!');
   console.log(`📊 Новых релизов: ${newReleases}`);
 }
 
-// ============== ЗАПУСК ==============
 main().catch((err) => {
   console.error('❌ Критическая ошибка:', err);
   process.exit(1);
